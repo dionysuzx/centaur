@@ -361,10 +361,15 @@ fn slack_user_principal(user: &str, team: &str, display_name: Option<&str>) -> P
 fn parse_slack_segments(thread_key: &str) -> (Option<&str>, Option<&str>) {
     let mut team = None;
     let mut conversation = None;
-    // Slack object ids are always uppercase, so match case-sensitively: a
-    // numeric thread_ts never matches, and a lowercase placeholder like "ts"
-    // is correctly ignored rather than mistaken for a team.
+    // Slack object ids are uppercase alphanumerics, so match the whole segment
+    // case-sensitively: a numeric thread_ts never matches, a lowercase
+    // placeholder like "ts" is ignored rather than mistaken for a team, and so
+    // is a non-Slack segment such as a GitHub "Owner/repo" that happens to
+    // start with T, C, D, or G.
     for segment in thread_key.split(':').skip(1).map(str::trim) {
+        if !is_slack_id(segment) {
+            continue;
+        }
         match segment.chars().next() {
             Some('T') if team.is_none() => team = Some(segment),
             Some('C' | 'D' | 'G') if conversation.is_none() => conversation = Some(segment),
@@ -372,6 +377,13 @@ fn parse_slack_segments(thread_key: &str) -> (Option<&str>, Option<&str>) {
         }
     }
     (team, conversation)
+}
+
+fn is_slack_id(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// The first Slack conversation id (``C``/``D``/``G``) in a thread key.
@@ -500,6 +512,25 @@ mod tests {
         assert_eq!(principal.slack_channel_id.as_deref(), Some("C123"));
         assert_eq!(principal.kind.as_deref(), Some("slack_channel"));
         assert!(principal.labels.is_empty());
+    }
+
+    #[test]
+    fn github_owners_that_look_like_slack_prefixes_are_not_slack_ids() {
+        for thread_key in [
+            "github:Globex/widgets:12",
+            "github-issue:Contoso/app:12",
+            "github-manage:Dunder/paper:12",
+            "github-review:Tyrell/replicant:12",
+        ] {
+            let principal = derive_principal(thread_key, None, None);
+            assert_eq!(
+                principal.foreign_id,
+                format!("thread-{}", slugify(thread_key))
+            );
+            assert_eq!(principal.kind, None);
+            assert_eq!(principal.slack_channel_id, None);
+            assert_eq!(principal.slack_team_id, None);
+        }
     }
 
     #[test]
